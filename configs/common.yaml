@@ -1,0 +1,16 @@
+# Shared by M2 (direct Indonesian) and M4 (transfer). Do not change per model.
+seed: 42
+sample_rate: 16000
+backbone: facebook/wav2vec2-base
+flag_below: 9            # Indonesian phone loss only in words with accuracy below this
+loss_weights:            # fixed hyperparameters (Eq. 1)
+  sent: 1.0
+  word: 1.0
+  stress: 0.5
+  phone: 1.0
+model:
+  lstm_hidden: 256
+  d_model: 256
+  n_heads: 4
+  n_dec_layers: 2
+  dropout: 0.1

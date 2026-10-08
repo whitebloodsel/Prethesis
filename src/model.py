@@ -19,6 +19,20 @@ MAX_PHONES = 256
 MAX_WORDS = 64
 
 
+def build_backbone(backbone="facebook/wav2vec2-base", tiny=False):
+    """Wav2Vec2 encoder shared by the CTC stage and the scoring model (same weight names).
+    Attention dropout is off because PyTorch on the Mac GPU (MPS) cannot do it; other dropouts stay on."""
+    if tiny:                                              # random small network, only for quick tests
+        cfg = Wav2Vec2Config(hidden_size=64, num_hidden_layers=3, num_attention_heads=4,
+                             intermediate_size=128, conv_dim=(32,) * 7, num_conv_pos_embeddings=16,
+                             num_conv_pos_embedding_groups=4, apply_spec_augment=False, layerdrop=0.0, attention_dropout=0.0)
+        m = Wav2Vec2Model(cfg)
+    else:
+        m = Wav2Vec2Model.from_pretrained(backbone, layerdrop=0.0, attention_dropout=0.0)
+    m.freeze_feature_encoder()                            # the CNN stays frozen in every model
+    return m
+
+
 class WeightedLayerSum(nn.Module):
     def __init__(self, n_layers):
         super().__init__()
@@ -33,15 +47,8 @@ class PronunciationScorer(nn.Module):
     def __init__(self, backbone="facebook/wav2vec2-base", tiny=False, lstm_hidden=256, d_model=256,
                  n_heads=4, n_dec_layers=2, dropout=0.1):
         super().__init__()
-        if tiny:                                              # random small network, only for quick tests
-            cfg = Wav2Vec2Config(hidden_size=64, num_hidden_layers=3, num_attention_heads=4,
-                                 intermediate_size=128, conv_dim=(32,) * 7, num_conv_pos_embeddings=16,
-                                 num_conv_pos_embedding_groups=4, apply_spec_augment=False, layerdrop=0.0)
-            self.wav2vec2 = Wav2Vec2Model(cfg)
-        else:
-            self.wav2vec2 = Wav2Vec2Model.from_pretrained(backbone, layerdrop=0.0)
+        self.wav2vec2 = build_backbone(backbone, tiny)
         cfg = self.wav2vec2.config
-        self.wav2vec2.freeze_feature_encoder()               # the CNN stays frozen in every model
         # base models were trained without an attention mask; passing one hurts them
         self.use_attn_mask = cfg.feat_extract_norm == "layer"
         self.layer_sum = WeightedLayerSum(cfg.num_hidden_layers + 1)
@@ -55,6 +62,9 @@ class PronunciationScorer(nn.Module):
         layer = nn.TransformerDecoderLayer(d_model, n_heads, dim_feedforward=4 * d_model, dropout=dropout,
                                            batch_first=True, norm_first=True)
         self.decoder = nn.TransformerDecoder(layer, n_dec_layers)
+        for l in self.decoder.layers:                          # attention dropout is not supported by the Mac GPU (MPS)
+            l.self_attn.dropout = 0.0
+            l.multihead_attn.dropout = 0.0
         self.phone_head = nn.Linear(d_model, 1)
         self.word_acc_head = nn.Linear(d_model, 1)
         self.word_stress_head = nn.Linear(d_model, 1)
